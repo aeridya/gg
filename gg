@@ -376,10 +376,13 @@ USAGE: ./$SN COMMAND
 COMMANDS:
     create      Creates a new Aeridya project
     configure   Creates a new prop file for Aeridya project
-    build       Builds the Aeridya project for production
     run         Runs the Aeridya project
+    build       Builds the Aeridya project for production
+    install     Installs the Aeridya project
     docker      TODO:  Build Aeridta project for Docker
     service     Configures the service file for systemd usage
+    nginx       Creates an nginx conf file based on Aeridya Project
+    minify      Minfies js and css files passed in
     help        Shows this help
 EOF
 }
