@@ -1,0 +1,428 @@
+#! /bin/sh
+## Deployment script for Aeridya
+
+# Script Name
+SN=$(basename $0)
+## Error Display
+ERR=$(tput setaf 1 && echo -n "[$SN]" && tput sgr0)
+
+## Minify URL
+MINURL="https://javascript-minifier.com/raw"
+
+## Utility function for a yes/no prompt
+## Should be sent a message
+yn() {
+	while true; do
+		printf "$1 [y/n] "
+		read a
+		if [ "$a" == "y" ]; then
+			return 0
+		elif [ "$a" == "n" ]; then
+			return 1
+		else
+			echo "$a is not valid"
+		fi
+	done
+}
+
+## Creates a .prop file in the current working directory
+prop() {
+    local name="$(basename $PWD)"
+    local user="$(whoami)"
+    local installdir="$HOME/.local/bin/$name"
+    local docroot="$installdir"
+    local domain="$name.com"
+    local port="5050"
+    local inData=""
+    echo "Creating $SN prop file"
+    echo "NOTE: Press enter to use setting in ()"
+    echo -n "Project name ($name): "
+    read inData
+    if [[ $inData != "" ]]; then name=$inData; fi
+    printf "\n# User production application runs as\n"
+    echo -n "Runtime User ($user): "
+    read inData
+    if [[ $inData != "" ]]; then user=$inData; fi
+    printf "\n# Directory to install Production\n"
+    echo -n "Installation Directory ($installdir): "
+    read inData
+    if [[ $inData != "" ]]; then installdir=$inData; fi
+    printf "\n# Directory for statics\n"
+    echo -n "Document Root ($docroot/static): "
+    read inData
+    if [[ $inData != "" ]]; then docroot=$inData; fi
+    printf "\n# Domain for configuration file\n"
+    echo -n "Domain ($domain): "
+    read inData
+    if [[ $inData != "" ]]; then domain=$inData; fi
+    printf "\n# Default Main Port for\n"
+    echo -n "Port ($port): "
+    read inData
+    if [[ $inData != "" ]]; then port=$inData; fi
+    cat << EOF > .prop
+AENAME=$name
+AEUSER=$user
+AEINSTALLDIR=$installdir
+AEDOCROOT=$docroot
+AEDOMAIN=$domain
+AEPORT=$port
+EOF
+}
+
+## Checks if prop exists, sources it if g2g
+checkProp() {
+    if [[ ! -f "$PWD/.prop" ]]; then
+        printf "$ERR: No property file found\nSolutions:\n   Run '$SN configure' to create from existing project\n   Run '$SN create' to create new project\n"
+        exit 1
+    fi
+    source "$PWD/.prop"
+}
+
+service() {
+    echo "Creating systemd service file for $AENAME"
+    local description="$AENAME"
+    local inData=""
+    echo -n "Description ($description): "
+    read inData
+    if [[ $inData != "" ]]; then description=$inData; fi
+
+    cat << EOF > $AENAME.service
+[Unit]
+Description=$description
+After=network.target
+StartLimitIntervalSec=0
+[Service]
+Type=simple
+Restart=always
+RestartSec=1
+User=$user
+WorkingDirectory=$AEINSTALLDIR
+ExecStart=$AEINSTALLDIR/$AENAME
+
+[Install]
+WantedBy=multi-user.target
+EOF
+}
+
+nginx() {
+    echo "Createing nginx conf for $AEDOMAIN"
+    cat << EOF > $AEDOMAIN.conf
+server {
+    server_name $AEDOMAIN;
+
+    location / {
+        proxy_pass http://localhost:$AEPORT/;
+    }
+
+    location /static {
+        deny all;
+    }
+
+    location /static/img {
+        alias /var/www/img;
+        expires 30d;
+        add_header Pragma public;
+        add_header Cache-Control "public";
+    }
+
+    location /static/css {
+        alias /var/www/css;
+        expires 60d;
+        add_header Pragma public;
+        add_header Cache-Control "public";
+    }
+
+    location /static/js {
+        alias /var/www/js;
+        expires 60d;
+        add_header Pragma public;
+        add_header Cache-Control "public";
+    }
+}
+EOF
+}
+
+## Creates a new project in the current directory
+#### THIS WILL DELETE CURRENT PROJECT IN DIRECTORY
+create() {
+    if [[ -f "$PWD/.prop" ]]; then
+        tput setaf 1
+        echo -n "WARNING:"
+        tput sgr0
+        yn " Not safe to run if existing project.  Proceed?"
+        if [ $? -ne 0 ]; then exit; fi
+        rm -rvf ./release ./static ./template
+    fi
+    prop
+    checkProp
+    echo "Creating new project $AENAME"
+    echo "Creating project directories..."
+    mkdir -vp ./release ./static/{,js,css,img} ./template
+    echo "Creating READMEs..."
+    printf "# $AENAME\n" > README.md
+    printf "# static\n" > ./static/README.md
+    printf "# js\njavascript files go here\n" > ./static/js/README.md
+    printf "# images\nimages go here\n" > ./static/img/README.md
+    printf "# css\ncss files go here\n" > ./static/css/README.md
+    printf "# template\ntemplate files\n" > ./template/README.md
+    echo "Creating default files..."
+    printf "### $AENAME ###\n# Ignore release folder\nrelease/*\n# Ignore .prop file\n.prop\n" > .gitignore
+    cat <<EOF > $AENAME.go
+package main
+
+import (
+    //stdlib
+    "fmt"
+    "os"
+
+    //aeridya
+    "github.com/aeridya/core"
+)
+
+var (
+    $AENAME *$(echo $AENAME)Theme
+)
+
+func main() {
+    onError(core.Create("$AENAME.conf"))
+    $AENAME = new($(echo $AENAME)Theme)
+
+    onError($AENAME.Init())
+
+    onError(core.Run())
+}
+
+func onError(err error) {
+    if err != nil {
+        fmt.Println(err)
+        os.Exit(1)
+    }
+}
+EOF
+cat << EOF > theme.go
+package main
+
+import (
+    //stdlib
+	"fmt"
+
+    //aeridya
+	"github.com/aeridya/core"
+	"github.com/aeridya/theme"
+)
+
+// $(echo $AENAME)Theme basic struct defining Theme
+type $(echo $AENAME)Theme struct {
+	theme.Theme
+}
+
+// Init initializes the Theme, can take a listing of theme.Option functions
+func (t *$(echo $AENAME)Theme) Init(opts ...theme.Option) error {
+	t.ParseOpts(opts)
+	theme.Register(t)
+	return nil
+}
+
+// Serve is the function the Theme uses to serve all content
+func (t *$(echo $AENAME)Theme) Serve(resp *core.Response) {
+	if resp.R.URL.Path == "/" {
+		resp.Return(200, []byte("Hello $(echo $AENAME)!"))
+		return
+	}
+	resp.Bad(404, "$(echo $AENAME)Theme theme only supports /")
+}
+
+// Error is the function the Theme uses to server errors
+func (t *$(echo $AENAME)Theme) Error(resp *core.Response) {
+	fmt.Fprintf(resp.W, "Error: %d\n%s\n", resp.Status, resp.Err)
+	return
+}
+EOF
+cat << EOF > $AENAME.conf
+## Configuration for basic site using Aeridya
+## A "#" denotes a comment in the configuration
+## A ";" denotes the beginning of a section
+## The Aeridya Section is required by the Aeridya Core
+;Aeridya
+
+# Log location
+## NOTE: use stdout to get term output
+Log = stdout
+
+# Port to listen on
+Port = $AEPORT
+
+# Domain name
+Domain = $AEDOMAIN
+
+# HTTPS Setting.
+## NOTE:  Aeridya itself does not handle HTTPS, and HTTPS
+## is only availble when used via a reverse proxy
+## This setting will set the internal URL for routing
+HTTPS = true
+
+# Development Mode
+## NOTE:  In production, it is recommended to disable
+Development = true
+
+# Workers
+## Sets allowed connections able to do work
+Workers = 10
+
+# Statics Options
+;Statics
+Directory = $AEDOCROOT/static
+
+# SSL Options
+## Internal settings for having Aeridya be an HTTPS Server
+;SSL
+
+# UseSSL Enables the SSL server
+## Note: All GET and HEAD http requests will be redirected to https
+### OVERRIDES: HTTPS=true when true
+### Further settings below only take effect if true
+UseSSL = false
+
+# AutoSSL enables automatic Let's Encrypt SSLs for Domain
+### Note: When enabled, Aeridya will become a stand-alone web server
+### OVERRIDES: Port=80 and HTTPSPort=443 when true
+AutoSSL = false
+
+# Directory to store Let's Encrypt SSLs
+## Only applicable if AutoSSL=true
+AutoSSLDirectory = $AEINSTALLDIR/certs
+
+# Port for HTTPS Connections
+## Only applicable if AutoSSL=false
+HTTPSPort = 5051
+
+# SSLCert location of the SSL Certificate
+## Only applicable if AutoSSL=false
+SSLCert = $AEINSTALLDIR/certs
+
+# SSLKey locatoin of the SSL Private Key
+## Only applicable if AutoSSL=false
+SSLKey = $AEINSTALLDIR/keys
+EOF
+echo "$AENAME setup is now complete!"
+yn "Should I initialize git?"
+if [ $? -eq 0 ]; then
+    echo "Initializing Git..."
+    git init
+    git add *
+    git commit -m "init $AENAME"
+fi
+yn "Do you want a systemd service file?"
+if [ $? -eq 0 ]; then
+    service
+fi
+yn "Do you want an nginx conf file?"
+if [ $? -eq 0 ]; then
+    nginx
+fi
+}
+
+build() {
+    echo "Building $AENAME"
+    mkdir -p ./release
+    CC=clang
+    CXX=clang++
+    go build -ldflags="-s -w" -o ./release/$AENAME
+}
+
+install() {
+    echo "Installing $AENAME"
+    if [[ ! -f "./release/$AENAME" ]]; then
+        echo "$ERR $AENAME not built.  Run $SN build"
+        exit 1
+    fi
+}
+
+docker() {
+    echo "TODO: Build deployment for docker"
+}
+
+run() {
+    echo "Running $AENAME"
+    mkdir -p ./release
+    CC=clang
+    CXX=clang++
+    go build -o ./release/$AENAME.temp
+    if [ $? -ne 0 ]; then exit; fi
+    exec ./release/$AENAME.temp
+}
+
+minify() {
+    shift # We don't need $1
+    for file in "$@"; do
+        if [[ -f "$file" ]]; then
+            echo "Minifying $file"
+            outfile="$(basename -s .js $file).min.js"
+            curl -X POST -s --data-urlencode "input@$file" $MINURL > $outfile
+        else
+            echo "$ERR file $file does not exist"
+        fi
+    done
+}
+
+help() {
+    cat << EOF
+$SN - Aeridya Deployment Script
+Helps with deployment of Aeridya Sites
+
+USAGE: ./$SN COMMAND
+   EX: ./$SN help
+
+COMMANDS:
+    create      Creates a new Aeridya project
+    configure   Creates a new prop file for Aeridya project
+    build       Builds the Aeridya project for production
+    run         Runs the Aeridya project
+    docker      TODO:  Build Aeridta project for Docker
+    service     Configures the service file for systemd usage
+    help        Shows this help
+EOF
+}
+
+if [ $# -eq 0 ]; then
+    echo "$ERR: $SN requires a parameter.  See $SN help"
+    exit 1
+fi
+
+case $1 in
+    help)
+        help
+        ;;
+    run)
+        checkProp
+        run
+        ;;
+    build)
+        checkProp
+        build
+        ;;
+    create)
+        create
+        ;;
+    configure)
+        prop
+        ;;
+    minify)
+        minify $@
+        ;;
+    service)
+        checkProp
+        service
+        ;;
+    nginx)
+        checkProp
+        nginx
+        ;;
+    install)
+        checkProp
+        install
+        ;;
+    *)
+        echo "$ERR: $1 is not a valid command."
+        exit 1
+esac
